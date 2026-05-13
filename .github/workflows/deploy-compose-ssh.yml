@@ -1,0 +1,95 @@
+name: Reusable - Deploy Docker Compose via SSH
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: "Nome do artifact com os arquivos a sincronizar com a VPS (deve conter o docker-compose e, se necessário, o .env)"
+        required: true
+        type: string
+      compose-file:
+        description: "Nome do arquivo docker-compose dentro do artifact, usado no 'docker compose -f'"
+        required: false
+        type: string
+        default: "docker-compose.prod.yaml"
+      remote-path:
+        description: "Diretório absoluto na VPS onde o deploy roda (ex.: /home/ubuntu/app/site)"
+        required: true
+        type: string
+      pre-deploy-command:
+        description: "Comando shell opcional executado via SSH antes do 'docker compose pull' (ex.: docker rmi para forçar pull)"
+        required: false
+        type: string
+        default: ""
+      pull-policy-always:
+        description: "Se true, adiciona '--policy always' ao 'docker compose pull' (útil com tags mutáveis como 'latest')"
+        required: false
+        type: boolean
+        default: false
+      force-recreate:
+        description: "Se true, adiciona '--force-recreate' ao 'docker compose up'"
+        required: false
+        type: boolean
+        default: false
+      environment:
+        description: "GitHub Environment com regras de proteção"
+        required: false
+        type: string
+        default: "Production"
+    secrets:
+      VPS_SSH_HOST:
+        required: true
+      VPS_SSH_USER:
+        required: true
+      VPS_SSH_PRIVATE_KEY:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Download deployment artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ./deploy
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+
+      - name: Add host to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.VPS_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Ensure remote directory exists
+        run: |
+          ssh "${{ secrets.VPS_SSH_USER }}@${{ secrets.VPS_SSH_HOST }}" \
+            "mkdir -p '${{ inputs.remote-path }}'"
+
+      - name: Sync deployment files to VPS
+        run: |
+          rsync -avz \
+            ./deploy/ \
+            "${{ secrets.VPS_SSH_USER }}@${{ secrets.VPS_SSH_HOST }}:${{ inputs.remote-path }}/"
+
+      - name: Deploy on VPS
+        env:
+          REMOTE_PATH: ${{ inputs.remote-path }}
+          COMPOSE_FILE: ${{ inputs.compose-file }}
+          PRE_DEPLOY: ${{ inputs.pre-deploy-command }}
+          PULL_FLAGS: ${{ inputs.pull-policy-always && '--policy always' || '' }}
+          UP_FLAGS: ${{ inputs.force-recreate && '--force-recreate' || '' }}
+        run: |
+          ssh "${{ secrets.VPS_SSH_USER }}@${{ secrets.VPS_SSH_HOST }}" bash -s <<EOF
+          set -e
+          cd "${REMOTE_PATH}"
+          ${PRE_DEPLOY}
+          docker compose -f "${COMPOSE_FILE}" pull ${PULL_FLAGS}
+          docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans ${UP_FLAGS}
+          docker system prune -f
+          EOF

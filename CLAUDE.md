@@ -18,6 +18,19 @@ jobs:
       PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
 ```
 
+### `deploy-compose-ssh.yml`
+
+Sincroniza um `docker-compose.*.yaml` (e demais arquivos auxiliares) com uma VPS via SSH+rsync e executa `docker compose pull && up -d` lá. Foi extraído dos workflows originais de `ivanildobarauna.dev` (site + rollback) e `ivanildobarauna.dev.automations` (n8n). Notas:
+
+- **Handoff via GitHub Artifact**: o caller é responsável por construir/buildar imagens, gerar o `docker-compose.prod.yaml` e o `.env`, e fazer `actions/upload-artifact@v4`. O reusável faz `download-artifact` e envia o conteúdo do diretório `./deploy/` por rsync. Isso evita escapar YAML/secrets em inputs string e mantém o caller como autor único do conteúdo.
+- **`rsync` sem `--delete`**: divergência intencional do original. Os workflows antigos usavam `--delete` mas com arquivos avulsos como source, o que tornava a flag um no-op. Ao mudar para `./deploy/` (diretório), `--delete` se torna ativo e perigoso para `remote-path` com estado. A escolha conservadora é não habilitar.
+- **Re-escrita do `.env` via SSH eliminada**: o padrão antigo do site fazia rsync do `.env` e depois `rm .env && echo "DD_API_KEY=..." >> .env` via SSH (redundante, já que o rsync já tinha entregue o conteúdo correto). O caller agora gera o `.env` localmente uma única vez e o rsync é a única fonte.
+- **Flags opcionais para tags mutáveis**: `pull-policy-always: true` e `force-recreate: true` reproduzem o comportamento do `n8n-deploy.yml` (tags `latest`/branch+sha). O site usa SemVer imutável e não precisa.
+- **`pre-deploy-command`**: comando shell opcional executado via SSH antes do `pull` — útil para o caso do n8n que faz `docker rmi -f` para forçar pull fresh.
+- **`mkdir -p` do `remote-path`**: sempre executado (idempotente). O workflow de rollback original assumia o diretório existente; o reusável padroniza para criar.
+- **`webfactory/ssh-agent@v0.10.0`**: fixado. Bump deliberado vs `v0.9.1` usado no site/rollback originais.
+- **Secrets**: `VPS_SSH_HOST`, `VPS_SSH_USER`, `VPS_SSH_PRIVATE_KEY` são `required: true` na interface. Os valores reais ficam em `Settings → Secrets and variables` do repo caller.
+
 ### `tests-python-poetry.yml`
 
 Roda testes Python com Poetry + (opcional) upload de cobertura para Codecov, suportando matrix de versões. Notas:
